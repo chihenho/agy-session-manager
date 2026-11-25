@@ -15,6 +15,7 @@ import {
   loadLocalStore,
   patchLocalSessionStore,
   removeLocalSessionEntry,
+  setLocalPrefs,
 } from "./local-store.mjs";
 import { getBrainDir, getDataDir } from "./paths.mjs";
 import {
@@ -24,7 +25,7 @@ import {
   upsertSnapshotConversation,
 } from "./snapshot-store.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 function normalizeSession(apiConv, brainRec, localStore) {
   const id = apiConv?.id ?? brainRec?.id;
@@ -109,6 +110,10 @@ export class SessionService {
     this.brainDir = getBrainDir(opts.brainDir);
     this.dataDir = getDataDir(opts.dataDir);
     this.apiOpts = opts.apiOpts ?? {};
+  }
+
+  setPrefs(patch = {}) {
+    return setLocalPrefs(this.dataDir, patch);
   }
 
   getCapabilities() {
@@ -331,6 +336,7 @@ export class SessionService {
         brainDir: this.brainDir,
         dataDir: this.dataDir,
       },
+      prefs: merged.localStore.prefs,
       stats,
       projects: [...projectCounts.entries()]
         .map(([id, count]) => ({ id, count }))

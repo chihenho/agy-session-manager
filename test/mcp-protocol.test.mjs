@@ -122,6 +122,18 @@ test("MCP server over stdio supports initialize, resources/read, and tools/call"
       arguments: { id: ID_1, note: "Saved via MCP" },
     });
     assert.equal(callUpdate.result.structuredContent.updated.note, "Saved via MCP");
+
+    const callPrefs = await rpc(9, "tools/call", {
+      name: "app_set_prefs",
+      arguments: { backgroundExec: false },
+    });
+    assert.equal(callPrefs.result.structuredContent.prefs.backgroundExec, false);
+
+    const callOpenAfter = await rpc(10, "tools/call", {
+      name: "open_session_manager",
+      arguments: {},
+    });
+    assert.equal(callOpenAfter.result.structuredContent.prefs.backgroundExec, false);
   } finally {
     proc.kill();
     rmSync(root, { recursive: true, force: true });

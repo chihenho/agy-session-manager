@@ -69,6 +69,7 @@ interface ListPayload {
   };
   projects: { id: string; count: number }[];
   tags: { name: string; count: number }[];
+  prefs?: { backgroundExec?: boolean };
   total: number;
   items: SessionItem[];
 }
@@ -82,6 +83,9 @@ const I18N = {
     snapshotMode: "已同步",
     localMode: "未同步归档",
     syncBtn: "同步归档状态",
+    bgExecLabel: "后台执行",
+    bgExecTitle: "在独立后台会话中执行恢复/归档，不插消息到当前对话（完成后自动归档临时任务）",
+    sentBgToChat: "已在独立后台会话执行（不污染当前对话），5 秒后自动刷新",
     tabSessions: "会话",
     tabArtifacts: "产物与图片",
     refresh: "刷新",
@@ -149,6 +153,9 @@ const I18N = {
     snapshotMode: "Synced",
     localMode: "Unsynced",
     syncBtn: "Sync Status",
+    bgExecLabel: "Background",
+    bgExecTitle: "Run restore/archive in an isolated background conversation without cluttering this chat",
+    sentBgToChat: "Running in background conversation (auto-refreshing in 5s)",
     tabSessions: "Sessions",
     tabArtifacts: "Artifacts & Images",
     refresh: "Refresh",
@@ -255,6 +262,7 @@ const state = {
   toastTimer: 0 as unknown as number,
   canMessage: false,
   canUpdateContext: false,
+  backgroundExec: true,
 };
 
 function t(key: keyof (typeof I18N)["en"], vars?: Record<string, string | number>): string {
@@ -344,6 +352,9 @@ async function loadSessions(forceRefresh = false) {
       forceRefresh,
     });
     state.data = data;
+    if (typeof data.prefs?.backgroundExec === "boolean") {
+      state.backgroundExec = data.prefs.backgroundExec;
+    }
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err));
   } finally {
@@ -396,24 +407,52 @@ async function copyText(txt: string) {
   }
 }
 
-async function dispatchCliBridge(cliArgs: string, humanLabel: string) {
-  const cmd = `node ${CLI_PATH} ${cliArgs}`;
+async function sendBridgeCommand(shellCmd: string, humanLabel: string) {
+  const fullCmd = state.backgroundExec
+    ? `${shellCmd} && node ${CLI_PATH} archive "$ANTIGRAVITY_CONVERSATION_ID"`
+    : shellCmd;
   const prompt =
     state.lang === "zh"
-      ? `请使用 session-manager 执行以下会话管理指令（完成后回复结果）：\n\`${cmd}\``
-      : `Run this agy-session-manager command via shell and report the result:\n\`${cmd}\``;
+      ? `请使用 session-manager 执行以下会话管理指令（完成后回复结果）：\n\`${fullCmd}\``
+      : `Run this agy-session-manager command via shell and report the result:\n\`${fullCmd}\``;
 
   if (state.canMessage) {
-    await app.sendMessage({
+    const payload: Record<string, unknown> = {
       role: "user",
       content: [{ type: "text", text: prompt }],
-    });
-    showToast(t("sentCliToChat"));
+    };
+    if (state.backgroundExec) {
+      payload._meta = { "com.google.antigravity/message": { target: "new" } };
+    }
+    await app.sendMessage(payload as Parameters<typeof app.sendMessage>[0]);
+    showToast(state.backgroundExec ? t("sentBgToChat") : t("sentCliToChat"));
+    if (state.backgroundExec) {
+      setTimeout(() => void loadSessions(), 5000);
+    }
     return;
   }
 
-  await copyText(prompt);
+  await copyText(
+    state.lang === "zh"
+      ? `请使用 session-manager 执行以下会话管理指令（完成后回复结果）：\n\`${shellCmd}\``
+      : `Run this agy-session-manager command via shell and report the result:\n\`${shellCmd}\``
+  );
   showToast(`${t("globalReadonlyHint")} (${humanLabel})`);
+}
+
+async function dispatchCliBridge(cliArgs: string, humanLabel: string) {
+  await sendBridgeCommand(`node ${CLI_PATH} ${cliArgs}`, humanLabel);
+}
+
+async function toggleBackgroundExec() {
+  const next = !state.backgroundExec;
+  state.backgroundExec = next;
+  render();
+  try {
+    await callAppTool("app_set_prefs", { backgroundExec: next });
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+  }
 }
 
 async function syncNativeStatus() {
@@ -521,17 +560,7 @@ async function batchUpdate(patch: Record<string, unknown>) {
         return `node ${CLI_PATH} tag ${id} ${shellQuote(next)}`;
       })
       .join(" && ");
-    const prompt =
-      state.lang === "zh"
-        ? `请执行以下批量标签更新指令：\n\`${cmds}\``
-        : `Run these batch tag commands:\n\`${cmds}\``;
-    if (state.canMessage) {
-      await app.sendMessage({ role: "user", content: [{ type: "text", text: prompt }] });
-      showToast(t("sentCliToChat"));
-    } else {
-      await copyText(prompt);
-      showToast(t("globalReadonlyHint"));
-    }
+    await sendBridgeCommand(cmds, t("tagsLabel"));
     state.selectedIds.clear();
     render();
   }
@@ -649,6 +678,7 @@ function renderTopbar(): string {
           <button class="tab-btn ${state.tab === "artifacts" ? "active" : ""}" data-act="tab" data-val="artifacts">${esc(t("tabArtifacts"))}</button>
         </div>
         <button class="btn sm primary" data-act="sync-native">${esc(t("syncBtn"))}</button>
+        ${state.canMessage && !caps?.liveApi ? `<button class="btn sm ${state.backgroundExec ? "primary" : ""}" data-act="toggle-bg-exec" title="${esc(t("bgExecTitle"))}">${state.backgroundExec ? "✓ " : ""}${esc(t("bgExecLabel"))}</button>` : ""}
         <button class="btn sm" data-act="refresh">${esc(t("refresh"))}</button>
         <button class="btn sm" data-act="toggle-lang">${state.lang === "zh" ? "EN" : "中文"}</button>
       </div>
@@ -1110,6 +1140,11 @@ document.addEventListener("click", (ev) => {
     return;
   }
 
+  if (act === "toggle-bg-exec") {
+    void toggleBackgroundExec();
+    return;
+  }
+
   if (act === "refresh") {
     if (state.tab === "sessions") void loadSessions(true);
     else void loadArtifacts();
@@ -1278,6 +1313,9 @@ app.ontoolresult = (result) => {
   const sc = result?.structuredContent as ListPayload | undefined;
   if (sc && Array.isArray(sc.items)) {
     state.data = sc;
+    if (typeof sc.prefs?.backgroundExec === "boolean") {
+      state.backgroundExec = sc.prefs.backgroundExec;
+    }
     state.loading = false;
     render();
   }

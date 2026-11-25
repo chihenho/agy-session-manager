@@ -9,7 +9,7 @@ English | [简体中文](./README.zh-CN.md)
 - **Real Archived Status Sync & One-Click Restore**:
   - Antigravity injects `ConversationService` credentials (`ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN`) into agent shells and hooks, not MCP server child processes.
   - `agy-session-manager` bridges this cleanly via a shared `${PLUGIN_DATA}/snapshot.json` metadata cache (auto-synced on install, periodically by a non-blocking `Stop` hook, or on demand via `cli.mjs sync`).
-  - From the **side panel (`+` → Session Manager)**, clicking **Sync Status**, **Restore to Active**, **Archive**, **Batch Restore**, **Pin**, **Star**, **Rename**, or **Delete** sends the exact CLI command to chat so Antigravity updates native state and refreshes `snapshot.json`.
+  - From the **side panel (`+` → Session Manager)**, clicking **Sync Status**, **Restore to Active**, **Archive**, **Batch Restore**, **Pin**, **Star**, **Rename**, or **Delete** executes via the CLI. With the **Background** toggle on (default), actions run in an isolated background conversation (`target: "new"`) and auto-archive the helper thread so your current chat stays clean.
   - In **full-page view**, native actions copy the ready-to-run command to your clipboard.
 - **Full-Page & Side-Panel MCP App UI (`ui://agy-session-manager/app.html`)**:
   - Open full-width from the left sidebar (**Plugins → Session Manager**) or beside your conversation from the side panel **`+`** menu.

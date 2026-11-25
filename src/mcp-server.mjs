@@ -3,7 +3,7 @@ import { getAppHtmlPath } from "./paths.mjs";
 import { SessionService } from "./session-service.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "agy-session-manager", version: "0.2.0" };
+const SERVER_INFO = { name: "agy-session-manager", version: "0.2.1" };
 const APP_URI = "ui://agy-session-manager/app.html";
 
 const ENTRYPOINT_META = {
@@ -177,6 +177,17 @@ function getTools() {
         required: ["id", "confirm"],
       },
     },
+    {
+      name: "app_set_prefs",
+      description: "App-only: update persistent UI preferences.",
+      _meta: APP_ONLY_META,
+      inputSchema: {
+        type: "object",
+        properties: {
+          backgroundExec: { type: "boolean" },
+        },
+      },
+    },
   ];
 }
 
@@ -311,6 +322,11 @@ export function createMcpServer(service = new SessionService()) {
       if (name === "app_delete_session") {
         const res = await service.deleteSession(args.id, args.confirm);
         return jsonResult(`Deleted conversation ${res.id}.`, res);
+      }
+
+      if (name === "app_set_prefs") {
+        const prefs = service.setPrefs(args);
+        return jsonResult(`Updated preferences.`, { prefs });
       }
 
       return errorResult(`Unknown tool: ${name}`);

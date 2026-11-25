@@ -7,8 +7,13 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+const DEFAULT_PREFS = {
+  backgroundExec: true,
+};
+
 const EMPTY_STORE = {
   version: 1,
+  prefs: { ...DEFAULT_PREFS },
   notes: {},
   localTags: {},
   localArchived: {},
@@ -33,8 +38,15 @@ export function loadLocalStore(dataDir) {
   try {
     const raw = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
+    const rawPrefs = isPlainObj(parsed.prefs) ? parsed.prefs : {};
     return {
       version: 1,
+      prefs: {
+        backgroundExec:
+          typeof rawPrefs.backgroundExec === "boolean"
+            ? rawPrefs.backgroundExec
+            : DEFAULT_PREFS.backgroundExec,
+      },
       notes: isPlainObj(parsed.notes) ? parsed.notes : {},
       localTags: isPlainObj(parsed.localTags) ? parsed.localTags : {},
       localArchived: isPlainObj(parsed.localArchived) ? parsed.localArchived : {},
@@ -58,6 +70,20 @@ export function saveLocalStore(dataDir, store) {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
   renameSync(tmpPath, filePath);
+}
+
+/**
+ * Update persistent UI preferences in store.json.
+ * @param {string} dataDir
+ * @param {object} patch
+ */
+export function setLocalPrefs(dataDir, patch = {}) {
+  const store = loadLocalStore(dataDir);
+  if (typeof patch.backgroundExec === "boolean") {
+    store.prefs.backgroundExec = patch.backgroundExec;
+  }
+  saveLocalStore(dataDir, store);
+  return store.prefs;
 }
 
 /**
