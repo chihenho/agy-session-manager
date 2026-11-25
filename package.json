@@ -1,0 +1,22 @@
+{
+  "name": "agy-session-manager",
+  "version": "0.1.0",
+  "description": "Visual session and archived conversation manager for Antigravity with full-page and side-panel MCP App UI, full-text transcript search, artifact/image gallery, and batch archive/tag management.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "agy-session-manager": "./src/cli.mjs"
+  },
+  "scripts": {
+    "build:ui": "node web/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "install:local": "node install.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
+    "esbuild": "^0.28.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
