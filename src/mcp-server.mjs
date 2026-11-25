@@ -3,7 +3,7 @@ import { getAppHtmlPath } from "./paths.mjs";
 import { SessionService } from "./session-service.mjs";
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "agy-session-manager", version: "0.1.0" };
+const SERVER_INFO = { name: "agy-session-manager", version: "0.2.0" };
 const APP_URI = "ui://agy-session-manager/app.html";
 
 const ENTRYPOINT_META = {
@@ -232,8 +232,14 @@ export function createMcpServer(service = new SessionService()) {
           limit: args.limit || 50,
         });
         const { stats, capabilities } = data;
+        const modeLabel =
+          capabilities.mode === "live_api"
+            ? "Live API"
+            : capabilities.mode === "snapshot_sync"
+              ? `Synced Snapshot (${capabilities.snapshotSyncedAt || ""})`
+              : "Local Index (not synced yet)";
         const text = [
-          `Session Manager ready (${capabilities.liveApi ? "Live API" : "Local Index"} mode).`,
+          `Session Manager ready (${modeLabel}).`,
           `Total: ${stats.total} (Active: ${stats.active}, Archived: ${stats.archived}, Pinned: ${stats.pinned}, Starred: ${stats.starred}).`,
           `Showing ${data.items.length} of ${data.total} matching conversations.`,
         ].join(" ");

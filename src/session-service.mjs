@@ -17,8 +17,14 @@ import {
   removeLocalSessionEntry,
 } from "./local-store.mjs";
 import { getBrainDir, getDataDir } from "./paths.mjs";
+import {
+  loadSnapshot,
+  removeSnapshotConversation,
+  saveSnapshot,
+  upsertSnapshotConversation,
+} from "./snapshot-store.mjs";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 function normalizeSession(apiConv, brainRec, localStore) {
   const id = apiConv?.id ?? brainRec?.id;
@@ -26,10 +32,8 @@ function normalizeSession(apiConv, brainRec, localStore) {
   const meta = apiConv?.metadata ?? {};
   const state = apiConv?.state ?? {};
 
-  const localTitle = localStore.localTitles[id] || "";
   const title =
     (ann.title && String(ann.title).trim()) ||
-    localTitle ||
     (state.summary && String(state.summary).trim().slice(0, 90)) ||
     (brainRec?.firstUserPrompt && brainRec.firstUserPrompt.slice(0, 90)) ||
     id;
@@ -43,23 +47,11 @@ function normalizeSession(apiConv, brainRec, localStore) {
     ...(Array.isArray(meta.tags) ? meta.tags : []),
     ...(Array.isArray(ann.tags) ? ann.tags : []),
   ];
-  const localTags = Array.isArray(localStore.localTags[id])
-    ? localStore.localTags[id]
-    : [];
-  const tags = [...new Set([...apiTags, ...localTags].map((t) => String(t).trim()).filter(Boolean))];
+  const tags = [...new Set(apiTags.map((t) => String(t).trim()).filter(Boolean))];
 
-  const archived =
-    typeof ann.archived === "boolean"
-      ? ann.archived
-      : Boolean(localStore.localArchived[id]);
-  const pinned =
-    typeof ann.pinned === "boolean"
-      ? ann.pinned
-      : Boolean(localStore.localPinned[id]);
-  const starred =
-    typeof ann.starred === "boolean"
-      ? ann.starred
-      : Boolean(localStore.localStarred[id]);
+  const archived = Boolean(ann.archived);
+  const pinned = Boolean(ann.pinned);
+  const starred = Boolean(ann.starred);
 
   const createTime = meta.createTime || brainRec?.createdAt || null;
   const updateTime = state.updateTime || brainRec?.updatedAt || createTime;
@@ -68,14 +60,12 @@ function normalizeSession(apiConv, brainRec, localStore) {
   return {
     id,
     title,
-    customTitle: ann.title || localTitle || "",
+    customTitle: ann.title || "",
     summary,
     archived,
     pinned,
     starred,
     tags,
-    apiTags: [...new Set(apiTags)],
-    localTags,
     conversationGroupId: ann.conversationGroupId || "",
     projectId: meta.projectId || (apiConv ? "outside-of-project" : "local-only"),
     runState: state.runState || "RUN_STATE_IDLE",
@@ -123,12 +113,45 @@ export class SessionService {
 
   getCapabilities() {
     const liveApi = isLiveApiAvailable(this.apiOpts);
+    const snap = loadSnapshot(this.dataDir);
+    const mode = liveApi
+      ? "live_api"
+      : snap.conversations.length > 0
+        ? "snapshot_sync"
+        : "local_index";
     return {
       version: VERSION,
       liveApi,
-      mode: liveApi ? "live_api" : "local_index",
+      mode,
+      snapshotSyncedAt: snap.syncedAt,
+      snapshotCount: snap.conversations.length,
       brainDir: this.brainDir,
       dataDir: this.dataDir,
+    };
+  }
+
+  async syncSnapshot() {
+    if (!isLiveApiAvailable(this.apiOpts)) {
+      throw new Error(
+        "sync requires live ConversationService (ANTIGRAVITY_LS_ADDRESS and ANTIGRAVITY_CSRF_TOKEN)."
+      );
+    }
+    const list = await listAllConversations({
+      ...this.apiOpts,
+      includeArchived: true,
+    });
+    const saved = saveSnapshot(this.dataDir, list);
+    let archived = 0;
+    let active = 0;
+    for (const c of saved.conversations) {
+      if (c.annotations?.archived) archived += 1;
+      else active += 1;
+    }
+    return {
+      syncedAt: saved.syncedAt,
+      total: saved.conversations.length,
+      active,
+      archived,
     };
   }
 
@@ -136,6 +159,8 @@ export class SessionService {
     const liveAvailable = isLiveApiAvailable(this.apiOpts);
     let apiError = null;
     let apiList = [];
+    let liveSuccess = false;
+    let snapshotSyncedAt = null;
 
     if (liveAvailable) {
       try {
@@ -143,9 +168,18 @@ export class SessionService {
           ...this.apiOpts,
           includeArchived: true,
         });
+        const saved = saveSnapshot(this.dataDir, apiList);
+        snapshotSyncedAt = saved.syncedAt;
+        liveSuccess = true;
       } catch (err) {
         apiError = err instanceof Error ? err.message : String(err);
       }
+    }
+
+    if (!liveSuccess) {
+      const snap = loadSnapshot(this.dataDir);
+      apiList = snap.conversations;
+      snapshotSyncedAt = snap.syncedAt;
     }
 
     const brainMap = scanBrainIndex({ brainDir: this.brainDir, force: forceBrain });
@@ -160,11 +194,19 @@ export class SessionService {
       );
     }
 
+    const mode = liveSuccess
+      ? "live_api"
+      : apiList.length > 0
+        ? "snapshot_sync"
+        : "local_index";
+
     return {
       sessions,
       brainMap,
       localStore,
-      liveApi: liveAvailable && !apiError,
+      liveApi: liveSuccess,
+      mode,
+      snapshotSyncedAt,
       apiError,
     };
   }
@@ -187,7 +229,6 @@ export class SessionService {
       (s) => includeSubagents || !s.isLikelySubagent
     );
 
-    // Compute stats & facets on visible base list
     const stats = {
       total: baseList.length,
       active: 0,
@@ -262,7 +303,6 @@ export class SessionService {
         .filter(Boolean);
     }
 
-    // Sort
     filtered.sort((a, b) => {
       if (sort === "updated_asc") return a.updateMs - b.updateMs;
       if (sort === "artifacts_desc") {
@@ -283,10 +323,13 @@ export class SessionService {
 
     return {
       capabilities: {
-        ...this.getCapabilities(),
+        version: VERSION,
         liveApi: merged.liveApi,
-        mode: merged.liveApi ? "live_api" : "local_index",
+        mode: merged.mode,
+        snapshotSyncedAt: merged.snapshotSyncedAt,
         apiError: merged.apiError,
+        brainDir: this.brainDir,
+        dataDir: this.dataDir,
       },
       stats,
       projects: [...projectCounts.entries()]
@@ -315,9 +358,15 @@ export class SessionService {
     if (isLiveApiAvailable(this.apiOpts)) {
       try {
         apiConv = await getConversation(cleanId, this.apiOpts);
+        upsertSnapshotConversation(this.dataDir, apiConv);
       } catch (err) {
         apiError = err instanceof Error ? err.message : String(err);
       }
+    }
+
+    if (!apiConv) {
+      const snap = loadSnapshot(this.dataDir);
+      apiConv = snap.conversations.find((c) => c.id === cleanId) ?? null;
     }
 
     if (!apiConv && !brainRec) {
@@ -327,7 +376,7 @@ export class SessionService {
     const base = normalizeSession(apiConv, brainRec, localStore);
     return {
       ...base,
-      liveApi: Boolean(apiConv),
+      liveApi: isLiveApiAvailable(this.apiOpts) && !apiError,
       apiError,
       brainPath: brainRec?.dirPath || null,
       userPrompts: brainRec?.userPrompts ?? [],
@@ -414,38 +463,32 @@ export class SessionService {
       annotations.conversationGroupId = patch.conversationGroupId;
     }
 
+    const hasNativeFields = Object.keys(annotations).length > 0;
     let apiUpdated = null;
     let apiError = null;
-    if (live && Object.keys(annotations).length > 0) {
+    if (live && hasNativeFields) {
       try {
         apiUpdated = await updateConversation(cleanId, annotations, this.apiOpts);
+        upsertSnapshotConversation(this.dataDir, apiUpdated);
       } catch (err) {
         apiError = err instanceof Error ? err.message : String(err);
       }
     }
 
-    // Persist local note always; persist annotation fallbacks when live API did not apply them
-    const localPatch = {};
-    if (typeof patch.note === "string") localPatch.note = patch.note;
-    if (!apiUpdated) {
-      if (typeof patch.title === "string") localPatch.localTitle = patch.title;
-      if (typeof patch.archived === "boolean") localPatch.localArchived = patch.archived;
-      if (typeof patch.pinned === "boolean") localPatch.localPinned = patch.pinned;
-      if (typeof patch.starred === "boolean") localPatch.localStarred = patch.starred;
-      if (Array.isArray(patch.tags)) localPatch.localTags = annotations.tags;
-    } else if (Array.isArray(patch.tags)) {
-      // Clear localTags override once live tags are updated
-      localPatch.localTags = [];
+    if (typeof patch.note === "string") {
+      patchLocalSessionStore(this.dataDir, cleanId, { note: patch.note });
     }
 
-    if (Object.keys(localPatch).length > 0) {
-      patchLocalSessionStore(this.dataDir, cleanId, localPatch);
+    const requiresChatBridge = hasNativeFields && !apiUpdated;
+    if (requiresChatBridge && !apiError) {
+      apiError = "Native status changes require Live ConversationService (run via chat or CLI).";
     }
 
     const detail = await this.getSessionDetail(cleanId);
     return {
       updated: detail,
-      appliedVia: apiUpdated ? "live_api" : "local_store",
+      appliedVia: apiUpdated ? "live_api" : typeof patch.note === "string" && !hasNativeFields ? "local_store" : "note_only",
+      requiresChatBridge,
       apiError,
     };
   }
@@ -476,8 +519,9 @@ export class SessionService {
           const res = await svc.updateSession(id, effectivePatch);
           results[idx] = {
             id,
-            ok: true,
+            ok: !res.requiresChatBridge,
             appliedVia: res.appliedVia,
+            requiresChatBridge: res.requiresChatBridge,
             apiError: res.apiError,
           };
         } catch (err) {
@@ -516,6 +560,7 @@ export class SessionService {
     }
     await deleteConversation(cleanId, this.apiOpts);
     removeLocalSessionEntry(this.dataDir, cleanId);
+    removeSnapshotConversation(this.dataDir, cleanId);
     return { deleted: true, id: cleanId };
   }
 }

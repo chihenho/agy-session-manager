@@ -1,6 +1,6 @@
 {
   "name": "agy-session-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Visual session and archived conversation manager for Antigravity with full-page and side-panel MCP App UI, full-text transcript search, artifact/image gallery, and batch archive/tag management.",
   "type": "module",
   "license": "MIT",

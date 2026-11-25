@@ -1,0 +1,11 @@
+{
+  "agy-session-manager-sync": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./src/hook-sync.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

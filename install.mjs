@@ -4,6 +4,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isLiveApiAvailable } from "./src/conversation-api.mjs";
+import { SessionService } from "./src/session-service.mjs";
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TARGET = join(homedir(), ".gemini", "config", "plugins", "agy-session-manager");
@@ -44,7 +46,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-function main() {
+async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const target = opts.target;
   const distHtml = join(REPO_ROOT, "dist", "app.html");
@@ -63,7 +65,7 @@ function main() {
     }
   }
 
-  for (const file of ["README.md", "README.zh-CN.md", "LICENSE", "mcp_config.json"]) {
+  for (const file of ["README.md", "README.zh-CN.md", "LICENSE", "mcp_config.json", "hooks.json"]) {
     const srcFile = join(REPO_ROOT, file);
     if (existsSync(srcFile)) {
       cpSync(srcFile, join(target, file));
@@ -77,11 +79,11 @@ function main() {
           ...baseManifest,
           displayName: "会话管理器",
           description:
-            "Antigravity 可视化会话与归档对话管理插件：支持全屏与右侧栏交互界面、跨会话全文与生成图片检索、备注标签及批量归档管理。",
+            "Antigravity 可视化会话与归档对话管理插件：同步原生已归档状态、支持全屏与右侧栏交互界面、跨会话全文与生成图片检索、以及一键恢复归档对话。",
           suggestedPrompts: [
             "打开会话管理器查看并恢复已归档对话",
             "在历史会话和生成的图片中搜索关键词",
-            "按项目和标签整理近期完成的对话并归档",
+            "同步并整理近期已归档对话",
           ],
         }
       : baseManifest;
@@ -92,11 +94,26 @@ function main() {
     "utf8"
   );
 
+  let syncLine = "Skipped (run `node src/cli.mjs sync` inside an Antigravity agent shell)";
+  if (isLiveApiAvailable()) {
+    try {
+      const svc = new SessionService();
+      const res = await svc.syncSnapshot();
+      syncLine = `Synced ${res.total} conversations (${res.active} active, ${res.archived} archived)`;
+    } catch (err) {
+      syncLine = `Warning: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   console.log("\n=== agy-session-manager installed ===");
   console.log(`Target : ${target}`);
   console.log(`Lang   : ${opts.lang}`);
   console.log(`UI App : ${join(target, "dist", "app.html")}`);
   console.log(`Skill  : ${join(target, "skills", "session-manager", "SKILL.md")}`);
+  console.log(`Sync   : ${syncLine}`);
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

@@ -2,22 +2,18 @@
 
 # agy-session-manager（Antigravity 会话管理器）
 
-**Antigravity 可视化会话与归档对话管理插件** —— 基于官方 **MCP Apps**（支持左侧栏 **Plugins** 全屏视图与右侧辅助栏 `aux_pane` 面板）、本地聊天记录与生成产物全文检索、以及零运行时依赖的 Node.js MCP Server。
+**Antigravity 可视化会话与归档对话管理插件** —— 支持 **同步真实已归档状态与一键恢复**、全屏与右侧辅助栏 `aux_pane` 交互界面、跨会话聊天记录与生成图片全文检索，以及零运行时依赖的 Node.js CLI / MCP 工具。
 
 ## 核心功能
 
+- **真实已归档状态同步 & 一键恢复到活跃**：
+  - Antigravity 仅向 Agent 终端和 Hook 注入 `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN`，不会注入给 MCP Server 子进程。
+  - 本插件通过共享 `${PLUGIN_DATA}/snapshot.json` 元数据快照打通双端：安装时自动同步、会话结束 `Stop` Hook 后台节流同步，或在界面点 **「同步归档状态」** 触发实时同步。
+  - 在 **右侧辅助栏（`+` → 会话管理器）** 中点击 **恢复到活跃 / 归档 / 批量恢复 / 置顶 / 星标 / 重命名 / 删除**，会自动向当前对话发送精确 CLI 指令执行原生 `ConversationService` 变更并即时更新快照；在 **全屏视图** 中会自动复制可执行指令到剪贴板。
 - **全屏 + 右侧栏交互界面（`ui://agy-session-manager/app.html`）**：
-  - 支持从左侧边栏 **Plugins → 会话管理器** 全屏打开，也支持在对话右侧辅助栏 **`+`** 菜单打开，或直接在聊天里呼出。
-  - 自动适配 Antigravity 明暗主题与语言环境（内置中/英一键切换）。
-- **活跃与归档会话统一管理**：
-  - 一键按 `全部 / 活跃 / 已归档 / 置顶 / 星标`、项目、标签筛选；默认隐藏纯子代理内部目录（可勾选查看）。
-  - 支持行内重命名、置顶、星标、个人备注（本地持久化到 `${PLUGIN_DATA}/store.json`）、批量归档/恢复/加标签。
+  - 支持从左侧边栏 **Plugins → 会话管理器** 全屏打开，也支持在对话右侧辅助栏 **`+`** 菜单打开，自动适配明暗主题与中英文切换。
 - **跨会话全文 + 产物图片墙检索**：
-  - 不仅搜标题，还能直接全文检索本地 `~/.gemini/antigravity/brain/<id>/` 里的 `transcript.jsonl` 对话记录与生成产物/图片文件名。
-  - 独立的 **产物与图片** 视图，跨全部历史/归档会话浏览生成过的图片与文档，支持弹框预览与一键 **在侧栏打开**。
-- **双模式架构（实时 API + 本地索引兜底）**：
-  - **Live API 模式**：当服务器进程拥有 `ANTIGRAVITY_LS_ADDRESS` 与 `ANTIGRAVITY_CSRF_TOKEN` 时，直连 `product.v1.ConversationService` 读写原生会话列表、归档状态、置顶/星标、标签与删除。
-  - **Local Index 模式**：即使未注入 RPC 环境变量，也能离线完整扫描本地 `brain/` 索引、保存个人备注/标签、挂载历史上下文到下次提问；配套 `session-manager` Skill 也可直接在聊天里执行原生 `ConversationService` 批量归档/恢复。
+  - 支持搜标题、摘要、标签、个人备注、`transcript.jsonl` 全文与生成图片/文档名，支持弹框预览与一键 **在侧栏打开**。
 
 ---
 
@@ -43,11 +39,15 @@ node install.mjs --lang zh
 ## 常用 CLI 命令
 
 ```bash
-node ~/.gemini/config/plugins/agy-session-manager/src/cli.mjs stats
-node ~/.gemini/config/plugins/agy-session-manager/src/cli.mjs list --archived --limit 20
-node ~/.gemini/config/plugins/agy-session-manager/src/cli.mjs search "关键词"
-node ~/.gemini/config/plugins/agy-session-manager/src/cli.mjs artifacts --images
-node ~/.gemini/config/plugins/agy-session-manager/src/cli.mjs doctor
+CLI="$HOME/.gemini/config/plugins/agy-session-manager/src/cli.mjs"
+
+node "$CLI" sync                       # 同步原生活跃/已归档状态到 snapshot.json
+node "$CLI" unarchive <id...>          # 恢复已归档对话到活跃列表
+node "$CLI" archive <id...>            # 归档指定对话
+node "$CLI" list --archived --limit 20 # 列出已归档会话
+node "$CLI" search "关键词"            # 跨会话全文与产物检索
+node "$CLI" artifacts --images         # 列出所有会话生成的图片
+node "$CLI" doctor                     # 诊断状态
 ```
 
 ## 开源协议

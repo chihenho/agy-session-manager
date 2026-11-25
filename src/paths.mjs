@@ -17,14 +17,14 @@ export function getPluginRoot() {
 }
 
 /**
- * Resolve persistent plugin data directory.
+ * Resolve persistent plugin data directory shared across MCP server, CLI, and hooks.
  * @param {string} [overrideDir]
  * @returns {string}
  */
 export function getDataDir(overrideDir) {
   if (overrideDir) return resolve(overrideDir);
   if (process.env.PLUGIN_DATA) return resolve(process.env.PLUGIN_DATA);
-  return join(getPluginRoot(), ".data");
+  return join(homedir(), ".gemini", "antigravity", "plugin_data", "agy-session-manager");
 }
 
 /**

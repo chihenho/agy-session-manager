@@ -5,11 +5,20 @@ import { join } from "node:path";
 import { isLiveApiAvailable } from "./conversation-api.mjs";
 import { getAppHtmlPath, getBrainDir, getDataDir, getPluginRoot } from "./paths.mjs";
 import { SessionService } from "./session-service.mjs";
+import { loadSnapshot } from "./snapshot-store.mjs";
 
 function printHelp() {
   console.log(`agy-session-manager CLI
 
 Usage:
+  node src/cli.mjs sync [--json]
+  node src/cli.mjs unarchive <id...> [--json]
+  node src/cli.mjs archive <id...> [--json]
+  node src/cli.mjs pin <id> [--off] [--json]
+  node src/cli.mjs star <id> [--off] [--json]
+  node src/cli.mjs rename <id> <title...>
+  node src/cli.mjs tag <id> <tag1,tag2>
+  node src/cli.mjs delete <id> --confirm
   node src/cli.mjs list [--archived|--active|--all] [--limit N] [--json]
   node src/cli.mjs search <query> [--limit N] [--json]
   node src/cli.mjs artifacts [--images|--docs] [query] [--limit N] [--json]
@@ -28,6 +37,8 @@ function parseFlags(args) {
     else if (a === "--images") flags.kind = "image";
     else if (a === "--docs") flags.kind = "doc";
     else if (a === "--json") flags.json = true;
+    else if (a === "--off") flags.off = true;
+    else if (a === "--confirm") flags.confirm = true;
     else if (a === "--limit" && args[i + 1]) {
       flags.limit = Number(args[i + 1]);
       i += 1;
@@ -85,17 +96,22 @@ async function runDoctor() {
   }
   checks.push({ name: "Data directory writable", ok: dataWritable, detail: dataDetail });
 
+  const snap = loadSnapshot(dataDir);
+  const snapArchived = snap.conversations.filter((c) => c.annotations?.archived).length;
+  const snapDetail = snap.syncedAt
+    ? `${snap.conversations.length} conversations (${snapArchived} archived), syncedAt=${snap.syncedAt}`
+    : "Not synced yet (run `node src/cli.mjs sync`)";
+  checks.push({ name: "Snapshot store", ok: true, detail: snapDetail });
+
   const svc = new SessionService();
   const liveCreds = isLiveApiAvailable();
-  let liveDetail = "Not set in current shell (MCP process inherits host env if supported)";
+  let liveDetail = "Not set in current shell (UI reads synced snapshot.json)";
   let liveOk = true;
   if (liveCreds) {
     try {
-      const res = await svc.listSessions({ limit: 1 });
-      liveDetail = res.capabilities.liveApi
-        ? `Connected (${res.stats.total} conversations: ${res.stats.active} active, ${res.stats.archived} archived)`
-        : `Error: ${res.capabilities.apiError}`;
-      liveOk = res.capabilities.liveApi;
+      const res = await svc.syncSnapshot();
+      liveDetail = `Connected & synced (${res.total} conversations: ${res.active} active, ${res.archived} archived)`;
+      liveOk = true;
     } catch (err) {
       liveDetail = err instanceof Error ? err.message : String(err);
       liveOk = false;
@@ -126,13 +142,105 @@ async function main() {
 
   const svc = new SessionService();
 
+  if (cmd === "sync") {
+    const res = await svc.syncSnapshot();
+    if (flags.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(`Synced ${res.total} conversations (${res.active} active, ${res.archived} archived) at ${res.syncedAt}`);
+    }
+    return;
+  }
+
+  if (cmd === "unarchive" || cmd === "archive") {
+    const ids = flags._;
+    if (ids.length === 0) {
+      console.error(`Error: ${cmd} requires at least one conversation ID.`);
+      process.exit(1);
+    }
+    const archived = cmd === "archive";
+    const res = await svc.batchUpdateSessions(ids, { archived });
+    if (flags.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(`${archived ? "Archived" : "Restored"} ${res.succeeded}/${res.total} conversation(s).`);
+      if (res.failed > 0) {
+        for (const r of res.results.filter((x) => !x.ok)) {
+          console.error(`  FAIL ${r.id}: ${r.apiError || r.error}`);
+        }
+        process.exitCode = 1;
+      }
+    }
+    return;
+  }
+
+  if (cmd === "pin" || cmd === "star") {
+    const id = flags._[0];
+    if (!id) {
+      console.error(`Error: ${cmd} requires a conversation ID.`);
+      process.exit(1);
+    }
+    const val = !flags.off;
+    const patch = cmd === "pin" ? { pinned: val } : { starred: val };
+    const res = await svc.updateSession(id, patch);
+    if (res.requiresChatBridge) {
+      console.error(`Error: ${res.apiError}`);
+      process.exit(1);
+    }
+    console.log(flags.json ? JSON.stringify(res, null, 2) : `Updated ${res.updated.title}: ${cmd}=${val}`);
+    return;
+  }
+
+  if (cmd === "rename") {
+    const [id, ...titleParts] = flags._;
+    const title = titleParts.join(" ").trim();
+    if (!id || !title) {
+      console.error("Error: rename requires <id> <title>.");
+      process.exit(1);
+    }
+    const res = await svc.updateSession(id, { title });
+    if (res.requiresChatBridge) {
+      console.error(`Error: ${res.apiError}`);
+      process.exit(1);
+    }
+    console.log(flags.json ? JSON.stringify(res, null, 2) : `Renamed ${id} -> ${res.updated.title}`);
+    return;
+  }
+
+  if (cmd === "tag") {
+    const [id, rawTags = ""] = flags._;
+    if (!id) {
+      console.error("Error: tag requires <id> <tag1,tag2>.");
+      process.exit(1);
+    }
+    const tags = rawTags.split(",").map((t) => t.trim()).filter(Boolean);
+    const res = await svc.updateSession(id, { tags });
+    if (res.requiresChatBridge) {
+      console.error(`Error: ${res.apiError}`);
+      process.exit(1);
+    }
+    console.log(flags.json ? JSON.stringify(res, null, 2) : `Tagged ${id}: [${res.updated.tags.join(", ")}]`);
+    return;
+  }
+
+  if (cmd === "delete") {
+    const id = flags._[0];
+    if (!id || !flags.confirm) {
+      console.error("Error: delete requires <id> --confirm.");
+      process.exit(1);
+    }
+    const res = await svc.deleteSession(id, true);
+    console.log(flags.json ? JSON.stringify(res, null, 2) : `Deleted ${res.id}`);
+    return;
+  }
+
   if (cmd === "stats") {
     const res = await svc.listSessions({ limit: 1 });
     if (flags.json) {
       console.log(JSON.stringify({ capabilities: res.capabilities, stats: res.stats, projects: res.projects, tags: res.tags }, null, 2));
       return;
     }
-    console.log(`Mode: ${res.capabilities.liveApi ? "Live API" : "Local Index"}`);
+    console.log(`Mode: ${res.capabilities.mode} (syncedAt: ${res.capabilities.snapshotSyncedAt || "never"})`);
     console.log(`Total: ${res.stats.total} | Active: ${res.stats.active} | Archived: ${res.stats.archived} | Pinned: ${res.stats.pinned} | Starred: ${res.stats.starred}`);
     console.log(`With Artifacts: ${res.stats.withArtifacts} | With Images: ${res.stats.withImages}`);
     return;

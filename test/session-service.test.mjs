@@ -17,7 +17,6 @@ function setupFixtureBrain() {
   mkdirSync(brainDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
-  // Session 1: root user session with transcript + image + doc
   const s1Dir = join(brainDir, ID_1);
   mkdirSync(join(s1Dir, ".system_generated", "logs"), { recursive: true });
   writeFileSync(
@@ -40,7 +39,6 @@ function setupFixtureBrain() {
     ].join("\n") + "\n",
     "utf8"
   );
-  // Minimal valid 1x1 PNG bytes
   const pngBytes = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64"
@@ -48,7 +46,6 @@ function setupFixtureBrain() {
   writeFileSync(join(s1Dir, "cylanco_icon_v3.png"), pngBytes);
   writeFileSync(join(s1Dir, "summary.md"), "# Design Summary\nChrome neon chosen.", "utf8");
 
-  // Session 2: local-only archived/active session
   const s2Dir = join(brainDir, ID_2);
   mkdirSync(join(s2Dir, ".system_generated", "logs"), { recursive: true });
   writeFileSync(
@@ -63,7 +60,6 @@ function setupFixtureBrain() {
     "utf8"
   );
 
-  // Subagent directory: no USER_EXPLICIT step
   const subDir = join(brainDir, ID_SUB);
   mkdirSync(join(subDir, ".system_generated", "logs"), { recursive: true });
   writeFileSync(
@@ -81,7 +77,7 @@ function setupFixtureBrain() {
   return { root, brainDir, dataDir };
 }
 
-test("SessionService works in Local Index mode, searches transcripts & rejects path traversal", async () => {
+test("SessionService works in Local Index mode, saves notes without faking archived state, & rejects traversal", async () => {
   const { root, brainDir, dataDir } = setupFixtureBrain();
   try {
     const svc = new SessionService({
@@ -93,55 +89,47 @@ test("SessionService works in Local Index mode, searches transcripts & rejects p
     const list = await svc.listSessions({ status: "all" });
     assert.equal(list.capabilities.liveApi, false);
     assert.equal(list.capabilities.mode, "local_index");
-    // Subagent filtered out by default
     assert.equal(list.total, 2);
 
     const withSub = await svc.listSessions({ includeSubagents: true });
     assert.equal(withSub.total, 3);
 
-    // Search transcript content
     const searchRes = await svc.searchSessions({ query: "chrome neon" });
     assert.equal(searchRes.total, 1);
     assert.equal(searchRes.items[0].id, ID_1);
     assert.match(searchRes.items[0].matchSnippet, /chrome neon/i);
 
-    // Artifacts gallery
     const artRes = await svc.searchArtifacts({ kind: "image" });
     assert.equal(artRes.total, 1);
     assert.equal(artRes.items[0].name, "cylanco_icon_v3.png");
 
-    // Preview image
     const preview = svc.getArtifactPreview({ id: ID_1, relPath: "cylanco_icon_v3.png" });
     assert.equal(preview.kind, "image");
     assert.ok(preview.dataUrl?.startsWith("data:image/png;base64,"));
 
-    // Preview doc
     const docPrev = svc.getArtifactPreview({ id: ID_1, relPath: "summary.md" });
     assert.equal(docPrev.kind, "doc");
     assert.match(docPrev.text, /Chrome neon chosen/);
 
-    // Path traversal rejection
     assert.throws(
       () => svc.getArtifactPreview({ id: ID_1, relPath: "../../etc/passwd" }),
       /Path traversal rejected/
     );
 
-    // Local note & tags persistence
+    // Note persists locally; native archived is NOT faked when liveApi is false
     const updated = await svc.updateSession(ID_1, {
       note: "Final selected variant C",
-      tags: ["design", "cylanco"],
       archived: true,
     });
-    assert.equal(updated.appliedVia, "local_store");
+    assert.equal(updated.requiresChatBridge, true);
     assert.equal(updated.updated.note, "Final selected variant C");
-    assert.equal(updated.updated.archived, true);
-    assert.deepEqual(updated.updated.tags, ["design", "cylanco"]);
+    assert.equal(updated.updated.archived, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("SessionService works in Live API mode with mock ConversationService", async () => {
+test("SessionService syncs snapshot in Live API mode and serves real archived counts to offline MCP process", async () => {
   const { root, brainDir, dataDir } = setupFixtureBrain();
   const store = new Map([
     [
@@ -176,7 +164,6 @@ test("SessionService works in Live API mode with mock ConversationService", asyn
 
       if (req.url?.endsWith("/ListConversations")) {
         const all = [...store.values()];
-        // Test pagination (page 1 -> page 2)
         if (!parsed.pageToken) {
           res.end(JSON.stringify({ conversations: [all[0]], nextPageToken: "p2" }));
         } else {
@@ -215,22 +202,34 @@ test("SessionService works in Live API mode with mock ConversationService", asyn
   const address = `127.0.0.1:${addr.port}`;
 
   try {
-    const svc = new SessionService({
+    const liveSvc = new SessionService({
       brainDir,
       dataDir,
       apiOpts: { address, csrfToken: "test-csrf" },
     });
 
-    const list = await svc.listSessions({ status: "archived" });
-    assert.equal(list.capabilities.liveApi, true);
-    assert.equal(list.stats.total, 2);
-    assert.equal(list.stats.archived, 1);
-    assert.equal(list.items.length, 1);
-    assert.equal(list.items[0].title, "Cylanco Icons");
-    assert.equal(list.items[0].imageCount, 1);
+    const syncRes = await liveSvc.syncSnapshot();
+    assert.equal(syncRes.total, 2);
+    assert.equal(syncRes.archived, 1);
+    assert.equal(syncRes.active, 1);
 
-    // Unarchive + batch tag
-    const batch = await svc.batchUpdateSessions([ID_1, ID_2], {
+    // Offline MCP service reading shared dataDir sees real archived status from snapshot_sync!
+    const mcpSvc = new SessionService({
+      brainDir,
+      dataDir,
+      apiOpts: { address: "", csrfToken: "" },
+    });
+    const offlineList = await mcpSvc.listSessions({ status: "archived" });
+    assert.equal(offlineList.capabilities.mode, "snapshot_sync");
+    assert.equal(offlineList.stats.total, 2);
+    assert.equal(offlineList.stats.archived, 1);
+    assert.equal(offlineList.stats.active, 1);
+    assert.equal(offlineList.items.length, 1);
+    assert.equal(offlineList.items[0].id, ID_1);
+    assert.equal(offlineList.items[0].title, "Cylanco Icons");
+
+    // Live batch unarchive updates both server and snapshot.json immediately
+    const batch = await liveSvc.batchUpdateSessions([ID_1, ID_2], {
       archived: false,
       addTag: "reviewed",
     });
@@ -238,11 +237,19 @@ test("SessionService works in Live API mode with mock ConversationService", asyn
     assert.equal(store.get(ID_1).annotations.archived, false);
     assert.deepEqual(store.get(ID_1).annotations.tags, ["reviewed"]);
 
-    // Delete requires confirm: true
-    await assert.rejects(() => svc.deleteSession(ID_2, false), /confirm: true/);
-    const delRes = await svc.deleteSession(ID_2, true);
+    const afterOffline = await mcpSvc.listSessions({ status: "archived" });
+    assert.equal(afterOffline.stats.archived, 0);
+    assert.equal(afterOffline.stats.active, 2);
+
+    // Live delete removes from both server and snapshot.json
+    await assert.rejects(() => liveSvc.deleteSession(ID_2, false), /confirm: true/);
+    const delRes = await liveSvc.deleteSession(ID_2, true);
     assert.equal(delRes.deleted, true);
-    assert.equal(store.has(ID_2), false);
+
+    const { loadSnapshot } = await import("../src/snapshot-store.mjs");
+    assert.equal(loadSnapshot(dataDir).conversations.length, 1);
+    const afterDeleteOffline = await mcpSvc.listSessions({ status: "all" });
+    assert.equal(afterDeleteOffline.items.find((x) => x.id === ID_2)?.hasLiveRecord, false);
   } finally {
     server.close();
     rmSync(root, { recursive: true, force: true });
